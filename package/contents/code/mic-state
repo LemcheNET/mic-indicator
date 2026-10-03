@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+# mic-state -- report microphone state for the Microphone Indicator plasmoid.
+#
+# Emits KEY=value lines on stdout, always the same keys in the same order:
+#   SOURCES=<n>    non-monitor capture sources present
+#   UNMUTED=<n>    of those, how many are not muted
+#   MUTED=<0|1>    1 when SOURCES>0 and UNMUTED==0 (every input muted)
+#   INUSE=<0|1>    1 when at least one application is capturing a real source
+#   VOLUME=<0-150> volume of the default source, else the loudest unmuted source
+#   DEFAULT=<name> default source name, may be empty
+#   APPS=<a|b|c>   names of capturing applications, pipe separated, may be empty
+#
+# Read-only. Exits 0 even with no sound server, in which case SOURCES=0.
+# Dependencies: pactl (pipewire-pulse or pulseaudio), awk. mawk-safe: no
+# 3-argument match(), no gensub(), no RS paragraph mode.
+set -uo pipefail
+
+PACTL=${PACTL:-pactl}
+
+if ! command -v "$PACTL" >/dev/null 2>&1; then
+    printf 'SOURCES=0\nUNMUTED=0\nMUTED=0\nINUSE=0\nVOLUME=0\nDEFAULT=\nAPPS=\nERROR=pactl-missing\n'
+    exit 0
+fi
+
+default_src=$("$PACTL" get-default-source 2>/dev/null || true)
+
+{
+    printf 'MICSTATE_SECTION_SOURCES\n'
+    "$PACTL" list sources 2>/dev/null
+    printf 'MICSTATE_SECTION_OUTPUTS\n'
+    "$PACTL" list source-outputs 2>/dev/null
+} | awk -v def="$default_src" '
+# Value of a   key = "quoted string"   property line, with | neutralised
+# because | is the field separator of the APPS output.
+function propval(s,    p) {
+    p = index(s, "= \"")
+    if (p == 0) return ""
+    s = substr(s, p + 3)
+    sub(/"$/, "", s)
+    gsub(/\|/, "/", s)
+    return s
+}
+# A stream attached to a monitor source is a loopback or a level meter, not
+# someone listening to you. plasma-pa excludes the same streams through its
+# VirtualStream role.
+function flush_output(    nm) {
+    if (!o_open) return
+    if (o_src != "" && mon[o_src] != 1) {
+        inuse = 1
+        nm = o_app
+        if (nm == "") nm = o_bin
+        if (nm == "") nm = o_media
+        if (nm == "") nm = "unknown"
+        if (!(nm in apps)) { apps[nm] = 1; order[++napps] = nm }
+    }
+    o_open = 0; o_src = ""; o_app = ""; o_bin = ""; o_media = ""
+}
+BEGIN { sec = ""; cur = ""; o_open = 0; o_src = ""; inuse = 0; napps = 0 }
+
+/^MICSTATE_SECTION_SOURCES$/ { sec = "src"; next }
+/^MICSTATE_SECTION_OUTPUTS$/ { flush_output(); sec = "out"; next }
+
+{ line = $0; sub(/^[ \t]+/, "", line) }
+
+sec == "src" {
+    if (line ~ /^Source #[0-9]+$/) { cur = substr(line, 9) + 0; seen[cur] = 1; mon[cur] = 0; mute[cur] = 0; next }
+    if (cur == "") next
+    if (line ~ /^Name: /)            { name[cur] = substr(line, 7); next }
+    if (line ~ /^Mute: /)            { mute[cur] = (substr(line, 7) == "yes") ? 1 : 0; next }
+    if (line ~ /^Monitor of Sink: /) { mon[cur]  = (substr(line, 18) == "n/a") ? 0 : 1; next }
+    if (line ~ /^Volume: /) {
+        if (!(cur in vol) && match(line, /[0-9]+%/)) vol[cur] = substr(line, RSTART, RLENGTH - 1) + 0
+        next
+    }
+    next
+}
+
+sec == "out" {
+    if (line ~ /^Source Output #[0-9]+$/)        { flush_output(); o_open = 1; next }
+    if (!o_open) next
+    if (line ~ /^Source: [0-9]+$/)               { o_src   = substr(line, 9) + 0; next }
+    if (line ~ /^application\.name = "/)         { o_app   = propval(line); next }
+    if (line ~ /^application\.process\.binary = "/) { o_bin = propval(line); next }
+    if (line ~ /^media\.name = "/)               { o_media = propval(line); next }
+    next
+}
+
+END {
+    flush_output()
+    nsrc = 0; nunmuted = 0; defvol = -1; maxvol = 0
+    for (i in seen) {
+        if (mon[i] == 1) continue
+        nsrc++
+        v = (i in vol) ? vol[i] : 0
+        if (mute[i] != 1) { nunmuted++; if (v > maxvol) maxvol = v }
+        if (def != "" && name[i] == def) defvol = v
+    }
+    printf "SOURCES=%d\n", nsrc
+    printf "UNMUTED=%d\n", nunmuted
+    printf "MUTED=%d\n", (nsrc > 0 && nunmuted == 0) ? 1 : 0
+    printf "INUSE=%d\n", (nsrc > 0) ? inuse : 0
+    printf "VOLUME=%d\n", (defvol >= 0) ? defvol : maxvol
+    printf "DEFAULT=%s\n", def
+    s = ""
+    for (k = 1; k <= napps; k++) s = (s == "") ? order[k] : s "|" order[k]
+    printf "APPS=%s\n", s
+}
+'

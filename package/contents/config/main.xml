@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kcfg xmlns="http://www.kde.org/standards/kcfg/1.0"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="http://www.kde.org/standards/kcfg/1.0
+                          http://www.kde.org/standards/kcfg/1.0/kcfg.xsd">
+  <kcfgfile name=""/>
+  <group name="General">
+    <entry name="pollInterval" type="Int">
+      <label>How often to re-read microphone state, in milliseconds.</label>
+      <default>1000</default>
+      <min>250</min>
+      <max>10000</max>
+    </entry>
+    <entry name="backend" type="String">
+      <label>Which mechanism performs the mute: plasma (plasma-pa over D-Bus) or pactl.</label>
+      <default>plasma</default>
+    </entry>
+    <entry name="muteScope" type="String">
+      <label>Which sources to mute: all, or default.</label>
+      <default>all</default>
+    </entry>
+    <entry name="iconSizeMode" type="String">
+      <label>auto: track the panel thickness. fixed: use iconSizePx.</label>
+      <default>auto</default>
+    </entry>
+    <entry name="iconSizePx" type="Int">
+      <label>Icon size in pixels when iconSizeMode is fixed.</label>
+      <default>24</default>
+      <min>8</min>
+      <max>128</max>
+    </entry>
+    <entry name="idleOpacityPercent" type="Int">
+      <label>Icon opacity when live but nothing is recording.</label>
+      <default>60</default>
+      <min>20</min>
+      <max>100</max>
+    </entry>
+    <entry name="showInUseDot" type="Bool">
+      <label>Overlay a dot while an application is capturing.</label>
+      <default>true</default>
+    </entry>
+    <entry name="pulseInUseDot" type="Bool">
+      <label>Pulse the in-use dot instead of showing it steady.</label>
+      <default>false</default>
+    </entry>
+    <entry name="showOsd" type="Bool">
+      <label>Show a Plasma on-screen message when mute changes.</label>
+      <default>false</default>
+    </entry>
+    <entry name="hideWhenIdle" type="Bool">
+      <label>Report passive status when live and idle, so the System Tray can hide it.</label>
+      <default>false</default>
+    </entry>
+  </group>
+</kcfg>

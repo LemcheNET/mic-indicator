@@ -1,0 +1,212 @@
+#!/usr/bin/env bash
+# mic-toggle -- mute, unmute or toggle microphone capture.
+#
+# usage: mic-toggle [toggle|mute|unmute]
+#
+# Two backends. The default hands the work to plasma-pa so that a click on the
+# widget and a press of the Plasma hotkey are the same code path:
+#
+#   MIC_BACKEND=plasma  (default)
+#       Loads the audioshortcutsservice KDED module, then invokes plasma-pa's
+#       own "mic_mute" global shortcut over D-Bus
+#       (/component/kmix, org.kde.kglobalaccel.Component.invokeShortcut).
+#       plasma-pa mutes every source and remembers the set it muted, so an
+#       unmute does not re-open a device you had deliberately muted yourself.
+#
+#   MIC_BACKEND=pactl
+#       Sets source mute directly. Use this outside a Plasma session, or if
+#       the KDED module is unavailable. Honours MIC_SCOPE.
+#
+# Environment:
+#   MIC_BACKEND=plasma|pactl   default: plasma
+#   MIC_SCOPE=all|default      pactl backend only. default: all
+#   MIC_FALLBACK=1|0           fall back to pactl if the D-Bus call fails. default: 1
+#   MIC_OSD=1|0                pactl backend only: show an on-screen message.
+#                              default: 0. On the plasma backend plasma-pa
+#                              draws its own OSD, so this is ignored.
+#   PACTL=<path>              override the pactl binary
+#
+# Prints nothing on success. Does not call mic-state, so the hotkey keeps
+# working if the widget is removed. Writes to the sound server only. No sudo.
+# Dependencies: pactl, awk, and one of gdbus/busctl/qdbus6/qdbus for the
+# plasma backend.
+set -uo pipefail
+
+PACTL=${PACTL:-pactl}
+MIC_BACKEND=${MIC_BACKEND:-plasma}
+MIC_SCOPE=${MIC_SCOPE:-all}
+MIC_FALLBACK=${MIC_FALLBACK:-1}
+MIC_OSD=${MIC_OSD:-0}
+ACTION=${1:-toggle}
+
+KGA_SERVICE=org.kde.kglobalaccel
+KGA_PATH=/component/kmix
+KGA_IFACE=org.kde.kglobalaccel.Component
+KDED_SERVICE=org.kde.kded6
+KDED_PATH=/kded
+KDED_MODULE=audioshortcutsservice
+
+# ---- D-Bus ------------------------------------------------------------------
+
+# dbus_call <service> <path> <iface> <method> [string-arg]
+# Tries the session-bus clients in order of how little they mangle arguments.
+dbus_call() {
+    local svc=$1 path=$2 iface=$3 method=$4 arg=${5:-}
+    if command -v gdbus >/dev/null 2>&1; then
+        if [ -n "$arg" ]; then
+            gdbus call --session --dest "$svc" --object-path "$path" \
+                --method "$iface.$method" "$arg" >/dev/null 2>&1
+        else
+            gdbus call --session --dest "$svc" --object-path "$path" \
+                --method "$iface.$method" >/dev/null 2>&1
+        fi
+        return
+    fi
+    if command -v busctl >/dev/null 2>&1; then
+        if [ -n "$arg" ]; then
+            busctl --user call "$svc" "$path" "$iface" "$method" s "$arg" >/dev/null 2>&1
+        else
+            busctl --user call "$svc" "$path" "$iface" "$method" >/dev/null 2>&1
+        fi
+        return
+    fi
+    local qd
+    qd=$(command -v qdbus6 || command -v qdbus || true)
+    if [ -n "$qd" ]; then
+        if [ -n "$arg" ]; then
+            "$qd" "$svc" "$path" "$iface.$method" "$arg" >/dev/null 2>&1
+        else
+            "$qd" "$svc" "$path" "$iface.$method" >/dev/null 2>&1
+        fi
+        return
+    fi
+    return 127
+}
+
+# ---- pactl ------------------------------------------------------------------
+
+# Non-monitor source names, one per line.
+sources() {
+    if [ "$MIC_SCOPE" = "default" ]; then
+        printf '%s\n' '@DEFAULT_SOURCE@'
+        return
+    fi
+    "$PACTL" list short sources 2>/dev/null \
+        | awk -F'\t' '$2 != "" && $2 !~ /\.monitor$/ { print $2 }'
+}
+
+# 0 if at least one source in scope is unmuted, 1 if none is, 2 if unknown.
+any_live() {
+    local src out seen=0 live=0
+    while IFS= read -r src; do
+        [ -n "$src" ] || continue
+        out=$("$PACTL" get-source-mute "$src" 2>/dev/null) || continue
+        seen=1
+        case "$out" in *": no"*) live=1 ;; esac
+    done < <(sources)
+    [ "$seen" = 1 ] || return 2
+    [ "$live" = 1 ] && return 0 || return 1
+}
+
+pactl_apply() {  # pactl_apply <1|0>
+    local want=$1 src n=0
+    while IFS= read -r src; do
+        [ -n "$src" ] || continue
+        "$PACTL" set-source-mute "$src" "$want" 2>/dev/null && n=$((n + 1))
+    done < <(sources)
+    [ "$n" -gt 0 ] || { echo "mic-toggle: no capture source accepted the change" >&2; return 1; }
+    return 0
+}
+
+# ---- plasma backend ---------------------------------------------------------
+
+plasma_invoke() {
+    # plasma-pa loads this module before every invoke; without it the shortcut
+    # has no handler and the call silently does nothing.
+    dbus_call "$KDED_SERVICE" "$KDED_PATH" "$KDED_SERVICE" loadModule "$KDED_MODULE" || return 1
+    dbus_call "$KGA_SERVICE" "$KGA_PATH" "$KGA_IFACE" invokeShortcut mic_mute || return 1
+    return 0
+}
+
+# plasma-pa's shortcut only toggles, so mute/unmute first check whether the
+# toggle is needed at all.
+plasma_set() {  # plasma_set <1|0>
+    local want=$1
+    any_live; local live=$?
+    case "$want$live" in
+        10) plasma_invoke ;;   # want muted, something live -> toggle
+        01) plasma_invoke ;;   # want live, nothing live    -> toggle
+        11|00) return 0 ;;     # already there
+        *) return 2 ;;         # state unknown
+    esac
+}
+
+# ---- OSD --------------------------------------------------------------------
+
+osd() {  # osd <muted|live>
+    [ "$MIC_OSD" = "1" ] || return 0
+    local icon text
+    if [ "$1" = "muted" ]; then
+        icon=microphone-sensitivity-muted; text="Microphone muted"
+    else
+        icon=microphone-sensitivity-high;  text="Microphone live"
+    fi
+    local qd
+    qd=$(command -v qdbus6 || command -v qdbus || true)
+    [ -n "$qd" ] || return 0
+    "$qd" org.kde.plasmashell /org/kde/osdService org.kde.osdService.showText \
+        "$icon" "$text" >/dev/null 2>&1 || true
+}
+
+# ---- dispatch ---------------------------------------------------------------
+
+note_fallback() {
+    echo "mic-toggle: plasma backend unavailable ($1), falling back to pactl" >&2
+}
+
+do_pactl() {
+    case "$ACTION" in
+        mute)   pactl_apply 1 || return 1; osd muted ;;
+        unmute) pactl_apply 0 || return 1; osd live ;;
+        toggle)
+            any_live; local live=$?
+            case "$live" in
+                0) pactl_apply 1 || return 1; osd muted ;;
+                1) pactl_apply 0 || return 1; osd live ;;
+                # State unreadable. Fail closed: mute rather than guess live.
+                *) echo "mic-toggle: could not read mute state, muting" >&2
+                   pactl_apply 1 || return 1; osd muted ;;
+            esac
+            ;;
+    esac
+    return 0
+}
+
+case "$ACTION" in
+    toggle|mute|unmute) ;;
+    *) echo "usage: mic-toggle [toggle|mute|unmute]" >&2; exit 2 ;;
+esac
+
+command -v "$PACTL" >/dev/null 2>&1 || { echo "mic-toggle: pactl not found" >&2; exit 1; }
+
+if [ "$MIC_BACKEND" = "plasma" ]; then
+    rc=0
+    case "$ACTION" in
+        toggle) plasma_invoke || rc=$? ;;
+        mute)   plasma_set 1  || rc=$? ;;
+        unmute) plasma_set 0  || rc=$? ;;
+    esac
+    if [ "$rc" -eq 0 ]; then
+        # No osd call here: plasma-pa draws its own OSD when mic_mute fires.
+        exit 0
+    fi
+    if [ "$MIC_FALLBACK" = "1" ]; then
+        note_fallback "rc=$rc"
+        do_pactl || exit 1
+        exit 0
+    fi
+    echo "mic-toggle: plasma backend failed (rc=$rc) and MIC_FALLBACK=0" >&2
+    exit 1
+fi
+
+do_pactl || exit 1

@@ -1,0 +1,19 @@
+{
+    "KPlugin": {
+        "Authors": [
+            {
+                "Email": "valdemar@lemche.net",
+                "Name": "Valdemar Lemche"
+            }
+        ],
+        "Category": "System Information",
+        "Description": "Shows whether the microphone is muted or in use, and toggles it on click or by hotkey",
+        "Icon": "audio-input-microphone",
+        "Id": "net.lemche.micindicator",
+        "License": "MIT",
+        "Name": "Microphone Indicator",
+        "Version": "1.0.0"
+    },
+    "KPackageStructure": "Plasma/Applet",
+    "X-Plasma-API-Minimum-Version": "6.0"
+}
