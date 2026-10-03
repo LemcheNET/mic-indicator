@@ -226,7 +226,7 @@ one is present on any systemd desktop.
 ## Install
 
 ```bash
-cd "/srv/projects/second-brain/Sovereign AI Workstation/src/mic-indicator"
+cd mic-indicator   # the root of this repository
 ./verify.sh            # read-only, changes nothing
 ./install.sh           # user-level, no sudo
 ```
