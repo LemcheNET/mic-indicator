@@ -15,7 +15,10 @@ jobs:
     name: SonarCloud scan
     runs-on: ubuntu-latest
     # Secrets are unavailable to PRs from forks; skip rather than fail.
-    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    # Dependabot PRs get a separate secret store, so SONAR_TOKEN is empty there.
+    if: >-
+      github.actor != 'dependabot[bot]' &&
+      (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository)
     steps:
       - uses: actions/checkout@v4
         with:
