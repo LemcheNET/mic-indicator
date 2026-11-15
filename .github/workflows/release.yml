@@ -1,0 +1,54 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Determine version
+        id: v
+        run: |
+          version=$(jq -r '.KPlugin.Version' package/metadata.json)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Tag v$version already exists; bump KPlugin.Version in package/metadata.json to release."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build .plasmoid
+        if: steps.v.outputs.exists == 'false'
+        run: |
+          chmod 0755 package/contents/code/mic-state package/contents/code/mic-toggle
+          mkdir dist
+          (cd package && zip -qr -X "../dist/net.lemche.micindicator-${{ steps.v.outputs.version }}.plasmoid" .)
+          (cd dist && sha256sum *.plasmoid > SHA256SUMS)
+      - name: Attest provenance
+        if: steps.v.outputs.exists == 'false'
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/*.plasmoid
+      - name: Create release
+        if: steps.v.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v${{ steps.v.outputs.version }}" dist/* \
+            --target "$GITHUB_SHA" --generate-notes \
+            --title "v${{ steps.v.outputs.version }}"
