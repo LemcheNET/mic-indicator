@@ -20,7 +20,7 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Determine version
@@ -43,7 +43,7 @@ jobs:
           (cd dist && sha256sum *.plasmoid > SHA256SUMS)
       - name: Attest provenance
         if: steps.v.outputs.exists == 'false'
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: dist/*.plasmoid
       - name: Create release
