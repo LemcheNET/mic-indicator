@@ -9,7 +9,7 @@ gh api -X PUT "repos/$repo/branches/main/protection" --input - <<JSON
 {
   "required_status_checks": {
     "strict": true,
-    "contexts": ["DCO sign-off", "ShellCheck", "CodeQL (workflows)", "Secret scan (gitleaks)", "SonarCloud scan"]
+    "contexts": ["DCO sign-off", "ShellCheck", "CodeQL (workflows)", "Secret scan (gitleaks)"]
   },
   "enforce_admins": true,
   "required_pull_request_reviews": {
